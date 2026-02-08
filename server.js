@@ -4,6 +4,12 @@ const { Pool } = require('pg');
 const app = express();
 app.use(express.json());
 
+// Логирование запросов
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} | ${req.method} ${req.url}`);
+  next();
+});
+
 // CORS для запросов из игры
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
