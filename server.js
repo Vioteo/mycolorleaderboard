@@ -34,6 +34,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// GET /api/health — пробуждение сервера (Render и др.), без обращения к БД
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true });
+});
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
@@ -194,8 +199,7 @@ app.post('/api/leaderboard-hero', async (req, res) => {
        VALUES ($1, $2, $3, $4, NOW())
        ON CONFLICT (player_name) DO UPDATE SET
          hero_id = EXCLUDED.hero_id, hero_level = EXCLUDED.hero_level, 
-         rarest_artifact_def_id = EXCLUDED.rarest_artifact_def_id, updated_at = NOW()
-       WHERE leaderboard_hero.hero_level < EXCLUDED.hero_level`,
+         rarest_artifact_def_id = EXCLUDED.rarest_artifact_def_id, updated_at = NOW()`,
       [pn, hid, hlvl, raid]
     );
     res.status(201).json({ ok: true });
@@ -219,6 +223,22 @@ app.get('/api/leaderboard-hero', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to load' });
+  }
+});
+
+// POST — сброс таблиц лидеров (только если player_name === "dev")
+app.post('/api/leaderboard-reset', async (req, res) => {
+  try {
+    const player_name = String(req.body.player_name || '').trim().toLowerCase();
+    if (player_name !== 'dev') {
+      return res.status(403).json({ error: 'Only dev can reset leaderboard' });
+    }
+    await pool.query('TRUNCATE TABLE leaderboard');
+    await pool.query('TRUNCATE TABLE leaderboard_hero');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to reset' });
   }
 });
 
