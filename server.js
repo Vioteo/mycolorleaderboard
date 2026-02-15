@@ -59,6 +59,9 @@ async function initDb() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='leaderboard' AND column_name='dungeon_tier') THEN
           ALTER TABLE leaderboard ADD COLUMN dungeon_tier INT NOT NULL DEFAULT 0;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='leaderboard' AND column_name='team_hero_ids') THEN
+          ALTER TABLE leaderboard ADD COLUMN team_hero_ids VARCHAR(32) DEFAULT NULL;
+        END IF;
       END $$;
     `);
     await client.query(`DROP INDEX IF EXISTS idx_leaderboard_rank`);
@@ -105,7 +108,7 @@ app.post('/api/leaderboard', async (req, res) => {
       postCountByIp.set(ip, { count: 1, firstAt: now });
     }
 
-    const { player_name = 'Player', dungeon_tier = 0, wave, boss_hp_left } = req.body;
+    const { player_name = 'Player', dungeon_tier = 0, wave, boss_hp_left, team_hero_ids } = req.body;
     if (wave == null || boss_hp_left == null) {
       return res.status(400).json({ error: 'wave and boss_hp_left required' });
     }
@@ -121,10 +124,16 @@ app.post('/api/leaderboard', async (req, res) => {
     if (!Number.isInteger(hp) || hp < 0 || hp > MAX_BOSS_HP) {
       return res.status(400).json({ error: 'boss_hp_left out of range' });
     }
+    let teamStr = null;
+    if (Array.isArray(team_hero_ids)) {
+      teamStr = team_hero_ids.slice(0, 5).map(x => Math.max(-1, Number(x) | 0)).join(',');
+    } else if (typeof team_hero_ids === 'string') {
+      teamStr = team_hero_ids.slice(0, 20);
+    }
 
     const r = await pool.query(
-      'INSERT INTO leaderboard (player_name, dungeon_tier, wave, boss_hp_left) VALUES ($1, $2, $3, $4) RETURNING id',
-      [String(player_name).slice(0, 10), dt, w, hp]
+      'INSERT INTO leaderboard (player_name, dungeon_tier, wave, boss_hp_left, team_hero_ids) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [String(player_name).slice(0, 10), dt, w, hp, teamStr]
     );
     res.status(201).json({ id: r.rows[0].id });
   } catch (e) {
@@ -133,14 +142,19 @@ app.post('/api/leaderboard', async (req, res) => {
   }
 });
 
-// GET — топ N (сортировка: выше данж, выше волна, меньше HP босса; скрываем dev)
+// GET — топ N, 1 запись на игрока (лучший результат), с командой; скрываем dev
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 100);
     const r = await pool.query(
-      `SELECT player_name, dungeon_tier, wave, boss_hp_left, created_at FROM leaderboard 
-       WHERE LOWER(TRIM(player_name)) != 'dev' 
-       ORDER BY dungeon_tier DESC, wave DESC, boss_hp_left ASC, created_at ASC LIMIT $1`,
+      `SELECT player_name, dungeon_tier, wave, boss_hp_left, team_hero_ids, created_at FROM (
+         SELECT DISTINCT ON (LOWER(TRIM(player_name))) 
+           player_name, dungeon_tier, wave, boss_hp_left, team_hero_ids, created_at
+         FROM leaderboard
+         WHERE LOWER(TRIM(player_name)) != 'dev'
+         ORDER BY LOWER(TRIM(player_name)), dungeon_tier DESC, wave DESC, boss_hp_left ASC, created_at ASC
+       ) sub
+       ORDER BY dungeon_tier DESC, wave DESC, boss_hp_left ASC LIMIT $1`,
       [limit]
     );
     res.json(r.rows);
