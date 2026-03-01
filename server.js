@@ -88,6 +88,15 @@ async function initDb() {
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_leaderboard_hero_level ON leaderboard_hero (hero_level DESC);
     `);
+
+    // Таблица облачных сохранений (один игрок = одна запись, данные в JSON)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS game_saves (
+        player_name VARCHAR(64) PRIMARY KEY,
+        data JSONB NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
   } finally {
     client.release();
   }
@@ -223,6 +232,65 @@ app.get('/api/leaderboard-hero', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to load' });
+  }
+});
+
+// GET — получить сохранение по нику (синхронизация с сервером)
+app.get('/api/save', async (req, res) => {
+  try {
+    const player_name = String(req.query.player_name || '').trim();
+    if (!player_name) {
+      return res.status(400).json({ error: 'player_name required' });
+    }
+    const pn = player_name.slice(0, 64);
+    const r = await pool.query(
+      'SELECT data, updated_at FROM game_saves WHERE player_name = $1',
+      [pn]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: 'No save' });
+    }
+    res.json({ data: r.rows[0].data, updated_at: r.rows[0].updated_at });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load save' });
+  }
+});
+
+// POST — сохранить данные (прогресс + настройки в JSON)
+const SAVE_RATE_LIMIT_MAX = 30;
+app.post('/api/save', async (req, res) => {
+  try {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    cleanupRateLimit();
+    const rec = postCountByIp.get(ip);
+    const now = Date.now();
+    if (rec) {
+      if (now - rec.firstAt > RATE_LIMIT_WINDOW_MS) {
+        postCountByIp.set(ip, { count: 1, firstAt: now });
+      } else if (rec.count >= SAVE_RATE_LIMIT_MAX) {
+        return res.status(429).json({ error: 'Too many save requests, try later' });
+      } else {
+        rec.count++;
+      }
+    } else {
+      postCountByIp.set(ip, { count: 1, firstAt: now });
+    }
+
+    const { player_name = 'Player', data = {} } = req.body;
+    const pn = String(player_name).slice(0, 64);
+    const payload = typeof data === 'object' ? data : {};
+    const r = await pool.query(
+      `INSERT INTO game_saves (player_name, data, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (player_name) DO UPDATE SET data = $2, updated_at = NOW()
+       RETURNING updated_at`,
+      [pn, JSON.stringify(payload)]
+    );
+    res.status(201).json({ ok: true, updated_at: r.rows[0].updated_at });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to save' });
   }
 });
 
