@@ -240,6 +240,7 @@ app.get('/api/save', async (req, res) => {
   try {
     const player_name = String(req.query.player_name || '').trim();
     if (!player_name) {
+      console.log('[Sync] GET /api/save — player_name required');
       return res.status(400).json({ error: 'player_name required' });
     }
     const pn = player_name.slice(0, 64);
@@ -248,9 +249,13 @@ app.get('/api/save', async (req, res) => {
       [pn]
     );
     if (r.rows.length === 0) {
+      console.log('[Sync] GET /api/save — download requested, no save | player_name=' + pn);
       return res.status(404).json({ error: 'No save' });
     }
-    res.json({ data: r.rows[0].data, updated_at: r.rows[0].updated_at });
+    const updated_at = r.rows[0].updated_at;
+    const dataKeys = r.rows[0].data && typeof r.rows[0].data === 'object' ? Object.keys(r.rows[0].data) : [];
+    console.log('[Sync] GET /api/save — download OK | player_name=' + pn + ' | updated_at=' + updated_at + ' | data_keys=' + dataKeys.join(','));
+    res.json({ data: r.rows[0].data, updated_at });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to load save' });
@@ -280,6 +285,7 @@ app.post('/api/save', async (req, res) => {
     const { player_name = 'Player', data = {} } = req.body;
     const pn = String(player_name).slice(0, 64);
     const payload = typeof data === 'object' ? data : {};
+    const payloadKeys = Object.keys(payload);
     const r = await pool.query(
       `INSERT INTO game_saves (player_name, data, updated_at)
        VALUES ($1, $2, NOW())
@@ -287,7 +293,9 @@ app.post('/api/save', async (req, res) => {
        RETURNING updated_at`,
       [pn, JSON.stringify(payload)]
     );
-    res.status(201).json({ ok: true, updated_at: r.rows[0].updated_at });
+    const updated_at = r.rows[0].updated_at;
+    console.log('[Sync] POST /api/save — upload OK | player_name=' + pn + ' | updated_at=' + updated_at + ' | payload_keys=' + payloadKeys.join(','));
+    res.status(201).json({ ok: true, updated_at });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to save' });
